@@ -1,9 +1,0 @@
-README.md
-pyproject.toml
-src/devcontainer/cli.py
-src/devcontainer.egg-info/PKG-INFO
-src/devcontainer.egg-info/SOURCES.txt
-src/devcontainer.egg-info/dependency_links.txt
-src/devcontainer.egg-info/entry_points.txt
-src/devcontainer.egg-info/requires.txt
-src/devcontainer.egg-info/top_level.txt

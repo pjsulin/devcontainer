@@ -8,4 +8,4 @@ dependencies = [
 ]
 
 [project.scripts]
-wingx = "devcontainer.cli:main"
+wgx = "devcontainer.cli:main"

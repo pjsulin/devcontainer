@@ -1,9 +1,0 @@
-README.md
-pyproject.toml
-src/devcontainer/main.py
-src/isolated_dev.egg-info/PKG-INFO
-src/isolated_dev.egg-info/SOURCES.txt
-src/isolated_dev.egg-info/dependency_links.txt
-src/isolated_dev.egg-info/entry_points.txt
-src/isolated_dev.egg-info/requires.txt
-src/isolated_dev.egg-info/top_level.txt

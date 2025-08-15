@@ -6,6 +6,7 @@ A Python CLI tool that combines git worktree setup and Claude session management
 Converted from bash scripts git-worktree.sh and claude-session.sh.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -116,6 +117,86 @@ def init_worktree(
 
 
 # Claude Session Commands
+@app.command("container-session")
+def container_session(
+    repo_path: str = typer.Argument(..., help="Absolute path to the repository"),
+    branch_name: str = typer.Argument(..., help="Branch name to work on"),
+    auto_attach: bool = typer.Option(False, "--auto-attach", help="Auto-attach after creating session")
+):
+    """Create and manage Claude Code tmux sessions inside containers."""
+    
+    # Validate repo path
+    repo_path_obj = Path(repo_path)
+    if not repo_path_obj.is_absolute():
+        console.print(f"[red]❌ Path must be absolute: {repo_path}[/red]")
+        raise typer.Exit(1)
+    
+    if not repo_path_obj.exists():
+        console.print(f"[red]❌ Repository path does not exist: {repo_path}[/red]")
+        raise typer.Exit(1)
+    
+    if not (repo_path_obj / ".git").exists() and not (repo_path_obj / ".bare").exists():
+        console.print(f"[red]❌ Path is not a git repository: {repo_path}[/red]")
+        raise typer.Exit(1)
+    
+    # Extract repository name
+    repo_name = repo_path_obj.name
+    session_name = f"{repo_name}__{branch_name}"
+    
+    # Sanitize session name for tmux and docker
+    sanitized_session = re.sub(r'[^a-zA-Z0-9._-]', '_', session_name)
+    container_name = f"devcontainer_{sanitized_session}"
+    
+    console.print(f"Container session: {session_name}")
+    console.print(f"Repository: {repo_path}")
+    console.print(f"Branch: {branch_name}")
+    
+    # Check if container is already running
+    if _container_exists(container_name):
+        console.print(f"⚡ Container '{container_name}' already exists!")
+        choice = typer.prompt("Do you want to [a]ttach, [r]ecreate, or [c]ancel? (a/r/c)", default="a")
+        
+        if choice.lower() in ['a', '']:
+            console.print("🔗 Attaching to existing container session...")
+            _attach_container_session(container_name, sanitized_session)
+            return
+        elif choice.lower() == 'r':
+            console.print("🔄 Recreating container...")
+            _stop_container(container_name)
+        elif choice.lower() == 'c':
+            console.print("❌ Cancelled")
+            return
+        else:
+            console.print("❌ Invalid choice. Cancelled.")
+            raise typer.Exit(1)
+    
+    # Ensure git worktree exists for the branch
+    worktree_path = repo_path_obj / branch_name
+    if not worktree_path.exists():
+        console.print(f"🌱 Creating git worktree for branch '{branch_name}'...")
+        _create_git_worktree(repo_path_obj, branch_name)
+    else:
+        console.print(f"📂 Using existing worktree: {worktree_path}")
+    
+    # Start container with docker-compose
+    console.print(f"Starting container: {container_name}")
+    _start_container(container_name, repo_path, branch_name)
+    
+    # Create tmux session inside container
+    console.print(f"Creating tmux session '{sanitized_session}' inside container...")
+    _create_container_tmux_session(container_name, sanitized_session, branch_name)
+    
+    console.print("[green]Container session created successfully![/green]")
+    console.print(f"Connect with: docker exec -it {container_name} tmux attach -t '{sanitized_session}'")
+    
+    # Auto-attach if requested
+    if auto_attach:
+        console.print("Auto-attaching to container session...")
+        import time
+        time.sleep(2)
+        _attach_container_session(container_name, sanitized_session)
+
+
 @app.command("session")
 def claude_session(
     session_name: Optional[str] = typer.Argument(None, help="Custom session name"),
@@ -272,6 +353,53 @@ def kill_all_sessions():
             console.print("❌ Cancelled")
     else:
         console.print("ℹ️  No Claude sessions to kill")
+
+
+@app.command("container-attach")
+def container_attach(
+    session_name: str = typer.Argument(..., help="Session name in format 'repo__branch'")
+):
+    """Attach to an existing container session."""
+    
+    # Sanitize session name for docker container naming
+    sanitized_session = re.sub(r'[^a-zA-Z0-9._-]', '_', session_name)
+    container_name = f"devcontainer_{sanitized_session}"
+    
+    console.print(f"🔗 Attempting to attach to container session: {session_name}")
+    console.print(f"🐳 Container: {container_name}")
+    
+    # Check if container exists and is running
+    if not _container_exists(container_name):
+        console.print(f"[red]❌ Container '{container_name}' is not running[/red]")
+        console.print("Available containers:")
+        _list_container_sessions()
+        raise typer.Exit(1)
+    
+    # Check if tmux session exists in container
+    try:
+        result = subprocess.run([
+            "docker", "exec", container_name,
+            "tmux", "has-session", "-t", sanitized_session
+        ], capture_output=True)
+        
+        if result.returncode != 0:
+            console.print(f"[red]❌ Tmux session '{sanitized_session}' not found in container[/red]")
+            console.print("Available tmux sessions in container:")
+            _list_container_tmux_sessions(container_name)
+            raise typer.Exit(1)
+    except subprocess.CalledProcessError:
+        console.print(f"[red]❌ Cannot check tmux sessions in container '{container_name}'[/red]")
+        raise typer.Exit(1)
+    
+    # Attach to the session
+    console.print(f"🔗 Attaching to session '{sanitized_session}' in container '{container_name}'...")
+    _attach_container_session(container_name, sanitized_session)
+
+
+@app.command("list-container-sessions")
+def list_container_sessions():
+    """List all running container sessions."""
+    _list_container_sessions()
 
 
 # Helper functions
@@ -440,6 +568,300 @@ def _command_exists(command: str) -> bool:
         return True
     except subprocess.CalledProcessError:
         return False
+
+
+# Container management helper functions
+def _container_exists(container_name: str) -> bool:
+    """Check if a Docker container exists and is running."""
+    try:
+        result = subprocess.run([
+            "docker", "ps", "-q", "-f", f"name={container_name}"
+        ], capture_output=True, text=True, check=True)
+        return bool(result.stdout.strip())
+    except subprocess.CalledProcessError:
+        return False
+
+
+def _stop_container(container_name: str):
+    """Stop and remove a Docker container."""
+    try:
+        subprocess.run(["docker", "stop", container_name], capture_output=True, check=True)
+        subprocess.run(["docker", "rm", container_name], capture_output=True, check=True)
+        console.print(f"🛑 Container '{container_name}' stopped and removed")
+    except subprocess.CalledProcessError:
+        console.print(f"[yellow]⚠️  Could not stop container '{container_name}' (may not exist)[/yellow]")
+
+
+def _start_container(container_name: str, repo_path: str, branch_name: str):
+    """Start a Docker container using docker-compose."""
+    try:
+        # Create a temporary docker-compose override for this specific container
+        branch_path = Path(repo_path) / branch_name
+        
+        # Get Anthropic API key from environment or prompt user
+        anthropic_key = _get_anthropic_key()
+        
+        # Build docker run command with environment variables
+        docker_cmd = [
+            "docker", "run", "-d", "--name", container_name,
+            "-v", f"{branch_path}:/workspace",
+            "-w", "/workspace"
+        ]
+        
+        # Add Anthropic API key as environment variable if available
+        if anthropic_key:
+            docker_cmd.extend(["-e", f"ANTHROPIC_API_KEY={anthropic_key}"])
+            console.print("🔑 Anthropic API key configured in container")
+        else:
+            console.print("[yellow]⚠️  No Anthropic API key found - Claude Code may not work in container[/yellow]")
+        
+        # Add image and command
+        docker_cmd.extend(["devcontainer:latest", "sleep", "infinity"])
+        
+        subprocess.run(docker_cmd, check=True)
+        
+        console.print(f"🐳 Container '{container_name}' started successfully")
+        
+        # Install tmux in the container if not already available
+        subprocess.run([
+            "docker", "exec", container_name,
+            "sh", "-c", "which tmux || (apt-get update && apt-get install -y tmux)"
+        ], capture_output=True)
+        
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]❌ Failed to start container: {e}[/red]")
+        raise typer.Exit(1)
+
+
+def _create_container_tmux_session(container_name: str, session_name: str, branch_name: str):
+    """Create a tmux session inside the container."""
+    try:
+        # Check if tmux session already exists in container
+        result = subprocess.run([
+            "docker", "exec", container_name,
+            "tmux", "has-session", "-t", session_name
+        ], capture_output=True)
+        
+        if result.returncode == 0:
+            console.print(f"⚡ Tmux session '{session_name}' already exists in container")
+            return
+        
+        # Create new tmux session
+        subprocess.run([
+            "docker", "exec", "-d", container_name,
+            "tmux", "new-session", "-d", "-s", session_name, "-c", "/workspace"
+        ], check=True)
+        
+        # Configure the session
+        subprocess.run([
+            "docker", "exec", container_name,
+            "tmux", "send-keys", "-t", session_name, "clear", "C-m"
+        ], check=True)
+        
+        subprocess.run([
+            "docker", "exec", container_name,
+            "tmux", "send-keys", "-t", session_name,
+            f"echo '🤖 Container Claude Code session: {session_name}'", "C-m"
+        ], check=True)
+        
+        subprocess.run([
+            "docker", "exec", container_name,
+            "tmux", "send-keys", "-t", session_name,
+            f"echo '🌱 Branch: {branch_name}'", "C-m"
+        ], check=True)
+        
+        # Check if claude command exists in container
+        result = subprocess.run([
+            "docker", "exec", container_name,
+            "which", "claude"
+        ], capture_output=True)
+        
+        if result.returncode == 0:
+            console.print("🤖 Starting Claude Code in container...")
+            subprocess.run([
+                "docker", "exec", container_name,
+                "tmux", "send-keys", "-t", session_name, "claude", "C-m"
+            ], check=True)
+        else:
+            subprocess.run([
+                "docker", "exec", container_name,
+                "tmux", "send-keys", "-t", session_name,
+                "echo 'Claude Code not available in container. Install it or use: docker exec -it CONTAINER bash'", "C-m"
+            ], check=True)
+        
+        # Set window name
+        subprocess.run([
+            "docker", "exec", container_name,
+            "tmux", "rename-window", "-t", f"{session_name}:0", "claude"
+        ], check=True)
+        
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]❌ Failed to create tmux session in container: {e}[/red]")
+        raise typer.Exit(1)
+
+
+def _attach_container_session(container_name: str, session_name: str):
+    """Attach to a tmux session inside a container."""
+    try:
+        subprocess.run([
+            "docker", "exec", "-it", container_name,
+            "tmux", "attach-session", "-t", session_name
+        ])
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]❌ Failed to attach to container session: {e}[/red]")
+        raise typer.Exit(1)
+
+
+def _create_git_worktree(repo_path: Path, branch_name: str):
+    """Create a git worktree for the specified branch."""
+    try:
+        worktree_path = repo_path / branch_name
+        
+        # Change to repo directory for git operations
+        original_cwd = os.getcwd()
+        os.chdir(repo_path)
+        
+        try:
+            # First try to create worktree from existing remote branch
+            subprocess.run([
+                "git", "worktree", "add", str(worktree_path), f"origin/{branch_name}"
+            ], check=True, capture_output=True)
+            console.print(f"🌱 Created worktree from remote branch 'origin/{branch_name}'")
+        except subprocess.CalledProcessError:
+            try:
+                # If that fails, try to create worktree from local branch
+                subprocess.run([
+                    "git", "worktree", "add", str(worktree_path), branch_name
+                ], check=True, capture_output=True)
+                console.print(f"🌱 Created worktree from local branch '{branch_name}'")
+            except subprocess.CalledProcessError:
+                # If that also fails, create new branch and worktree
+                try:
+                    # Determine the main/default branch
+                    result = subprocess.run([
+                        "git", "symbolic-ref", "refs/remotes/origin/HEAD"
+                    ], capture_output=True, text=True, check=True)
+                    default_branch = result.stdout.strip().split('/')[-1]
+                except subprocess.CalledProcessError:
+                    default_branch = "main"
+                
+                subprocess.run([
+                    "git", "worktree", "add", "-b", branch_name, str(worktree_path), default_branch
+                ], check=True)
+                console.print(f"🌱 Created new branch '{branch_name}' and worktree from '{default_branch}'")
+        
+        finally:
+            os.chdir(original_cwd)
+            
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]❌ Failed to create git worktree: {e}[/red]")
+        raise typer.Exit(1)
+
+
+def _get_anthropic_key() -> Optional[str]:
+    """Get Anthropic API key from environment variables or common config locations."""
+    
+    # Check environment variable first
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        console.print("🔑 Found Anthropic API key in environment variable")
+        return api_key
+    
+    # Check Claude Code config locations
+    claude_config_paths = [
+        Path.home() / ".config" / "claude" / "config.json",
+        Path.home() / ".claude" / "config.json",
+        Path.home() / "Library" / "Application Support" / "Claude" / "config.json",  # macOS
+    ]
+    
+    for config_path in claude_config_paths:
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    if "api_key" in config:
+                        console.print(f"🔑 Found Anthropic API key in {config_path}")
+                        return config["api_key"]
+                    elif "anthropic_api_key" in config:
+                        console.print(f"🔑 Found Anthropic API key in {config_path}")
+                        return config["anthropic_api_key"]
+            except (json.JSONDecodeError, KeyError, IOError):
+                continue
+    
+    # Check common shell config files for exported variables
+    shell_configs = [
+        Path.home() / ".bashrc",
+        Path.home() / ".zshrc", 
+        Path.home() / ".bash_profile",
+        Path.home() / ".profile"
+    ]
+    
+    for shell_config in shell_configs:
+        if shell_config.exists():
+            try:
+                with open(shell_config, 'r') as f:
+                    content = f.read()
+                    # Look for export ANTHROPIC_API_KEY=
+                    match = re.search(r'export\s+ANTHROPIC_API_KEY\s*=\s*["\']?([^"\'\s]+)["\']?', content)
+                    if match:
+                        console.print(f"🔑 Found Anthropic API key in {shell_config}")
+                        return match.group(1)
+            except IOError:
+                continue
+    
+    # Prompt user to enter API key
+    console.print("[yellow]⚠️  Anthropic API key not found in environment or config files[/yellow]")
+    console.print("Claude Code requires an API key to work properly in the container.")
+    
+    if typer.confirm("Would you like to enter your Anthropic API key now?", default=False):
+        api_key = typer.prompt("Enter your Anthropic API key", hide_input=True)
+        if api_key.strip():
+            return api_key.strip()
+    
+    return None
+
+
+def _list_container_sessions():
+    """List all running devcontainer sessions."""
+    try:
+        result = subprocess.run([
+            "docker", "ps", "--filter", "name=devcontainer_", "--format", "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+        ], capture_output=True, text=True, check=True)
+        
+        lines = result.stdout.strip().split('\n')
+        if len(lines) <= 1:  # Only header or empty
+            console.print("📋 Active container sessions:")
+            console.print("   No active container sessions found")
+            return
+        
+        console.print("📋 Active container sessions:")
+        for line in lines:
+            console.print(f"   {line}")
+            
+    except subprocess.CalledProcessError:
+        console.print("📋 Active container sessions:")
+        console.print("   Unable to list containers (Docker not available?)")
+
+
+def _list_container_tmux_sessions(container_name: str):
+    """List tmux sessions inside a specific container."""
+    try:
+        result = subprocess.run([
+            "docker", "exec", container_name,
+            "tmux", "list-sessions", "-F", "#{session_name}"
+        ], capture_output=True, text=True, check=True)
+        
+        sessions = result.stdout.strip().split('\n') if result.stdout.strip() else []
+        if sessions:
+            console.print("   Available tmux sessions:")
+            for session in sessions:
+                console.print(f"     - {session}")
+        else:
+            console.print("   No tmux sessions found in container")
+            
+    except subprocess.CalledProcessError:
+        console.print("   Unable to list tmux sessions in container")
+
 
 def main():
     app()

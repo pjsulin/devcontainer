@@ -1,0 +1,11 @@
+[project]
+name = "devcontainer"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "rich>=13.0.0",
+    "typer>=0.9.0",
+]
+
+[project.scripts]
+wingx = "devcontainer.cli:main"

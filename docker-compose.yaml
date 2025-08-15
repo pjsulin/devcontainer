@@ -1,0 +1,8 @@
+
+services:
+  dev:
+    image: devcontainer:latest
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    command: bash

@@ -1,40 +1,51 @@
 ```mermaid
 flowchart TD
-  subgraph CLI[wingx CLI]
-    CLI_Create["Create Session"]
-    CLI_Attach["Attach Session"]
-    CLI_Delete["Delete Session"]
+  subgraph CLI[dsm CLI]
+    CLI_Create["dsm create (local)"]
+    CLI_SSH["dsm ssh"]
+    CLI_Container["dsm container"]
+    CLI_Resume["dsm resume"]
+    CLI_Tail["dsm tail"]
+  end
+
+  subgraph Local[Local Sessions - dtach]
+    DtachLocal["dtach socket"]
+    ScriptCapture["script -q -F output.log"]
+    LocalCmd["Command (claude, bash, etc.)"]
+    DtachLocal --> ScriptCapture --> LocalCmd
+  end
+
+  subgraph SSH[SSH Sessions - dtach]
+    DtachSSH["dtach socket"]
+    SSHCapture["script -q -F output.log"]
+    SSHCmd["ssh with keepalive"]
+    DtachSSH --> SSHCapture --> SSHCmd
   end
 
   subgraph DockerHost[Docker Host]
-    subgraph Container1["Container: repo_name"]
-      TmuxSession1["tmux: repo_name__branch1"]
-      WorkingTree1["Git Worktree: branch1"]
-      ClaudeSession1["Claude Code Session\n(runs in branch1 directory)"]
-      
-      TmuxSession2["tmux: repo_name__branch2"]
-      WorkingTree2["Git Worktree: branch2"]
-      ClaudeSession2["Claude Code Session\n(runs in branch2 directory)"]
+    subgraph Container1["dsm_repo_branch"]
+      Workspace1["/workspace (mounted worktree)"]
+      Claude1["claude --dangerously-skip-permissions"]
+      Workspace1 --> Claude1
     end
 
-    subgraph Container2["Container: another_repo"]
-      TmuxSession3["tmux: another_repo__branchA"]
-      WorkingTree3["Git Worktree: branchA"]
-      ClaudeSession3["Claude Code Session\n(runs in branchA directory)"]
+    subgraph Container2["dsm_repo_feature"]
+      Workspace2["/workspace (mounted worktree)"]
+      Claude2["claude --dangerously-skip-permissions"]
+      Workspace2 --> Claude2
     end
   end
 
-  CLI_Create --> |"Launches or uses"| DockerHost
-  CLI_Create --> |"Creates tmux session\n(repo__branch)"| TmuxSession1
-  CLI_Attach --> |"Attaches to tmux\nsession inside container"| TmuxSession1
-  CLI_Delete --> |"Stops tmux session"| TmuxSession1
+  subgraph Meta["~/.dsm/<session-id>/"]
+    MetaJSON["meta.json (type, command, container info)"]
+    Socket["socket (dtach, local/ssh only)"]
+    OutputLog["output.log (local/ssh only)"]
+  end
 
-  TmuxSession1 --> WorkingTree1
-  WorkingTree1 --> ClaudeSession1
-
-  TmuxSession2 --> WorkingTree2
-  WorkingTree2 --> ClaudeSession2
-
-  TmuxSession3 --> WorkingTree3
-  WorkingTree3 --> ClaudeSession3
+  CLI_Create --> Local
+  CLI_SSH --> SSH
+  CLI_Container --> |"docker run -d + docker exec -it"| DockerHost
+  CLI_Resume --> |"dtach -a (local/ssh)"| Local
+  CLI_Resume --> |"docker exec -it (container)"| DockerHost
+  CLI_Tail --> |"tail -f output.log"| OutputLog
 ```

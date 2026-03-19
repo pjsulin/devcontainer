@@ -9,7 +9,7 @@ CMD ["/sbin/my_init"]
 
 # Install required packages
 # REVIEW - MIght not need tmux inside the contatiner
-RUN apt-get update && apt-get install tmux npm -y
+RUN apt-get update && apt-get install npm -y
 
 # Install required packages for copilot
 RUN npm install -g @anthropic-ai/claude-code

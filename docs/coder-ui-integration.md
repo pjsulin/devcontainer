@@ -26,7 +26,9 @@ Key files:
 
 ## Integration approach
 
-Run coder_ui's backend inside a dsm container, with the frontend on the host pointing at the container's exposed port.
+Bake coder_ui into the devcontainer image. The Dockerfile already installs `claude` via npm — same pattern. Copy coder_ui source in and install its Python deps at build time. Then `dsm container` only needs to mount the project worktree (which it already does) and expose a port. No extra volume mounts.
+
+The frontend stays on the Mac, pointing at the container's exposed port.
 
 ### What dsm container already provides
 - Git worktree creation and volume mounting at `/workspace`
@@ -36,22 +38,31 @@ Run coder_ui's backend inside a dsm container, with the frontend on the host poi
 
 ### What's needed
 
-**1. Port mapping** — `dsm container` needs a `-p` / `--port` flag to expose ports:
+**1. Dockerfile: bake in coder_ui** — Add coder_ui source and deps to the image alongside claude:
+
+```dockerfile
+# Copy coder_ui backend and install deps
+COPY coder_ui/ /opt/coder_ui/
+RUN cd /opt/coder_ui && uv pip install --system -e .
+```
+
+This keeps it self-contained — no extra volume mounts, no init steps. The image has claude + coder_ui backend ready to go.
+
+**2. Port mapping in dsm** — `dsm container` needs a `-p` / `--port` flag:
 
 ```bash
 dsm container -t myproject-ui /path/to/repo main \
   -p 8003:8003 \
-  -- uvicorn src.backend.api.main:app --host 0.0.0.0 --port 8003
+  -- python -m uvicorn src.backend.api.main:app --host 0.0.0.0 --port 8003 --app-dir /opt/coder_ui
 ```
 
-This adds `-p 8003:8003` to the `docker run` command.
+**3. SQLite persistence** — coder_ui stores tasks/messages in `./data/coder_ui.db`. Two options:
+- Store it under `/workspace/.coder_ui/` so it lives in the mounted worktree and survives container recreation
+- Accept it's ephemeral (MVP — tasks are cheap to recreate)
 
-**2. Python deps in container** — The devcontainer image needs coder_ui's dependencies (fastapi, aiosqlite, uvicorn, etc.). Options:
-- Bake them into the Dockerfile
-- Mount coder_ui source and `uv pip install -e .` as a setup step
-- Add an `--init-cmd` flag to dsm container that runs before the main command
+**4. Claude session files** — Claude writes to `~/.claude/projects/` inside the container. Same persistence question. For MVP, accept they're ephemeral — Claude can start fresh sessions. For durability, store under `/workspace/.claude/`.
 
-**3. Frontend config** — Point the frontend at the container's backend:
+**5. Frontend config** — Point the frontend at the container's backend:
 
 ```bash
 VITE_API_URL=http://localhost:8003 VITE_WS_URL=ws://localhost:8003 npm run dev
@@ -63,7 +74,7 @@ VITE_API_URL=http://localhost:8003 VITE_WS_URL=ws://localhost:8003 npm run dev
 # Start a coder_ui-backed container session for a project
 dsm container -t myapp-ui /path/to/myapp main \
   -p 8003:8003 \
-  -- uvicorn src.backend.api.main:app --host 0.0.0.0 --port 8003
+  -- python -m uvicorn src.backend.api.main:app --host 0.0.0.0 --port 8003 --app-dir /opt/coder_ui
 
 # Frontend on host
 cd ~/repos/dev/coder_ui/src/frontend
@@ -79,20 +90,21 @@ dsm rm myapp-ui           # stops and removes
 
 ```
 Mac Host                          Docker Container (dsm_myapp_main)
-┌──────────────────┐              ┌──────────────────────────────┐
-│ Browser           │              │ /workspace (mounted worktree) │
-│   ↕ WebSocket    │   port 8003  │                              │
-│ React Frontend ──────────────────→ FastAPI Backend              │
-│ (npm run dev)    │              │   ↕ subprocess.Popen         │
-│                  │              │ claude CLI (stream-json)      │
-│                  │              │   ↕                           │
-│                  │              │ SQLite (tasks, messages)      │
-└──────────────────┘              └──────────────────────────────┘
+┌──────────────────┐              ┌──────────────────────────────────┐
+│ Browser           │              │ /opt/coder_ui (baked into image)  │
+│   ↕ WebSocket    │   port 8003  │   FastAPI Backend                │
+│ React Frontend ──────────────────→   ↕ subprocess.Popen            │
+│ (npm run dev)    │              │   claude CLI (stream-json)        │
+│                  │              │     cwd=/workspace                │
+│                  │              │                                   │
+│                  │              │ /workspace (mounted worktree)     │
+│                  │              │ SQLite (tasks, messages)          │
+└──────────────────┘              └──────────────────────────────────┘
 ```
 
-### Implementation changes to dsm
+### Implementation changes
 
-Minimal — add port mapping support to `cmd_container()`:
+**dsm cli.py** — add `-p`/`--port` flag to `cmd_container()`:
 
 ```python
 # In argparse setup
@@ -102,6 +114,13 @@ p_container.add_argument("-p", "--port", action="append", default=[],
 # In docker run command construction
 for port in args.port:
     docker_cmd.extend(["-p", port])
+```
+
+**Dockerfile** — add coder_ui install after claude:
+
+```dockerfile
+COPY coder_ui/ /opt/coder_ui/
+RUN cd /opt/coder_ui && uv pip install --system -e .
 ```
 
 Everything else (worktree, API key, container lifecycle, resume/rm/clean) works as-is.

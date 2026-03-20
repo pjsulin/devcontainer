@@ -1,18 +1,18 @@
 FROM phusion/baseimage:noble-1.0.2
 COPY --from=ghcr.io/astral-sh/uv:0.8.10 /uv /uvx /bin/
 
-# ARG REPO_NAME
-# RUN echo "Building version: ${REPO_NAME}"
-
 # Use baseimage-docker's init system.
 CMD ["/sbin/my_init"]
 
 # Install required packages
-# REVIEW - MIght not need tmux inside the contatiner
 RUN apt-get update && apt-get install npm -y
 
-# Install required packages for copilot
+# Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
+
+# Install coder_ui backend
+COPY coder_ui/ /opt/coder_ui/
+RUN cd /opt/coder_ui && uv pip install --system -e .
 
 # Clean up APT when done.
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*

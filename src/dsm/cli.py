@@ -356,10 +356,50 @@ def cmd_ssh(args):
     dtach_exec(sock, ssh_cmd, log_path)
 
 
+def build_docker_run_cmd(container_name: str, repo_path: Path, image: str,
+                         ports: list[str], volumes: list[str],
+                         branch: str | None = None) -> list[str]:
+    """Build the docker run command for a container session.
+
+    Mounts repo root at /workspace. If branch is provided and a worktree
+    exists at repo_path/branch, sets workdir to /workspace/branch.
+    """
+    docker_cmd = [
+        "docker", "run", "-d", "--name", container_name,
+        "-v", f"{repo_path}:/workspace",
+    ]
+
+    # Set workdir: /workspace/branch if branch given, else /workspace
+    if branch:
+        docker_cmd.extend(["-w", f"/workspace/{branch}"])
+    else:
+        docker_cmd.extend(["-w", "/workspace"])
+
+    # Port mappings
+    for port in ports:
+        docker_cmd.extend(["-p", port])
+
+    # Extra volume mounts
+    for vol in volumes:
+        docker_cmd.extend(["-v", vol])
+
+    # API key
+    anthropic_key = get_anthropic_key()
+    if anthropic_key:
+        docker_cmd.extend(["-e", f"ANTHROPIC_API_KEY={anthropic_key}"])
+    else:
+        print("Warning: no Anthropic API key found - Claude Code may not work in container", file=sys.stderr)
+
+    docker_cmd.extend([image, "sleep", "infinity"])
+    return docker_cmd
+
+
 def cmd_container(args):
     repo_path = Path(args.repo_path).resolve()
-    branch = args.branch
+    branch = args.branch  # may be None
     image = args.image or "devcontainer:latest"
+    ports = args.port or []
+    volumes = args.volume or []
 
     # Validate repo path is git repo
     if not repo_path.exists():
@@ -370,11 +410,14 @@ def cmd_container(args):
         sys.exit(1)
 
     repo_name = repo_path.name
-    container_name = f"dsm_{repo_name}_{branch}"
+    if branch:
+        container_name = f"dsm_{repo_name}_{branch}"
+    else:
+        container_name = f"dsm_{repo_name}"
     # Sanitize for docker
     container_name = re.sub(r"[^a-zA-Z0-9._-]", "_", container_name)
 
-    title = args.title or f"{repo_name}/{branch}"
+    title = args.title or (f"{repo_name}/{branch}" if branch else repo_name)
     slug = slugify(title)
     if not slug:
         slug = container_name
@@ -382,31 +425,21 @@ def cmd_container(args):
     session_dir = DSM_DIR / sid
     session_dir.mkdir(parents=True)
 
-    # Create worktree if missing
-    worktree_path = repo_path / branch
-    if not worktree_path.exists():
-        print(f"Creating git worktree for branch '{branch}'...")
-        create_git_worktree(repo_path, branch)
-    else:
-        print(f"Using existing worktree: {worktree_path}")
+    # Create worktree if branch specified and missing
+    if branch:
+        worktree_path = repo_path / branch
+        if not worktree_path.exists():
+            print(f"Creating git worktree for branch '{branch}'...")
+            create_git_worktree(repo_path, branch)
+        else:
+            print(f"Using existing worktree: {worktree_path}")
 
     # Determine command
     command = args.command if args.command else ["claude", "--dangerously-skip-permissions"]
 
-    # Get API key
-    anthropic_key = get_anthropic_key()
-
     # docker run
-    docker_cmd = [
-        "docker", "run", "-d", "--name", container_name,
-        "-v", f"{worktree_path}:/workspace",
-        "-w", "/workspace",
-    ]
-    if anthropic_key:
-        docker_cmd.extend(["-e", f"ANTHROPIC_API_KEY={anthropic_key}"])
-    else:
-        print("Warning: no Anthropic API key found - Claude Code may not work in container", file=sys.stderr)
-    docker_cmd.extend([image, "sleep", "infinity"])
+    docker_cmd = build_docker_run_cmd(container_name, repo_path, image,
+                                       ports, volumes, branch)
 
     try:
         subprocess.run(docker_cmd, check=True)
@@ -432,14 +465,16 @@ def cmd_container(args):
             "image": image,
             "repo_path": str(repo_path),
             "branch": branch,
-            "worktree_path": str(worktree_path),
+            "ports": ports,
+            "volumes": volumes,
         },
     }
     save_meta(session_dir, meta)
 
     # Exec into container and run command
+    workdir = f"/workspace/{branch}" if branch else "/workspace"
     exec_cmd = ["docker", "exec", "-it", container_name, "bash", "-lc",
-                 f"cd /workspace && {shlex.join(command)}"]
+                 f"cd {workdir} && {shlex.join(command)}"]
     os.execvp("docker", exec_cmd)
 
 
@@ -493,23 +528,20 @@ def cmd_resume(args):
         cinfo = meta.get("container", {})
         cname = cinfo.get("name", "")
         command = meta.get("command", ["claude", "--dangerously-skip-permissions"])
+        branch = cinfo.get("branch")
+        workdir = f"/workspace/{branch}" if branch else "/workspace"
 
         if not container_alive(cname):
             print(f"Container '{cname}' is dead. Recreating...", file=sys.stderr)
             # Remove old container if it exists (stopped)
             subprocess.run(["docker", "rm", cname], capture_output=True)
-            # Re-run container
+            # Re-run container with original settings
+            repo_path = Path(cinfo.get("repo_path", ""))
             image = cinfo.get("image", "devcontainer:latest")
-            worktree_path = cinfo.get("worktree_path", "")
-            docker_cmd = [
-                "docker", "run", "-d", "--name", cname,
-                "-v", f"{worktree_path}:/workspace",
-                "-w", "/workspace",
-            ]
-            anthropic_key = get_anthropic_key()
-            if anthropic_key:
-                docker_cmd.extend(["-e", f"ANTHROPIC_API_KEY={anthropic_key}"])
-            docker_cmd.extend([image, "sleep", "infinity"])
+            ports = cinfo.get("ports", [])
+            volumes = cinfo.get("volumes", [])
+            docker_cmd = build_docker_run_cmd(cname, repo_path, image,
+                                               ports, volumes, branch)
             try:
                 subprocess.run(docker_cmd, check=True)
             except subprocess.CalledProcessError as e:
@@ -519,7 +551,7 @@ def cmd_resume(args):
             save_meta(session_dir, meta)
             # Exec with command
             exec_cmd = ["docker", "exec", "-it", cname, "bash", "-lc",
-                         f"cd /workspace && {shlex.join(command)}"]
+                         f"cd {workdir} && {shlex.join(command)}"]
             os.execvp("docker", exec_cmd)
         else:
             save_meta(session_dir, meta)
@@ -775,13 +807,18 @@ def main():
     # container
     p_container = sub.add_parser(
         "container", aliases=["con"],
-        help="Create a container session with worktree",
+        help="Create a container session",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_container.add_argument("-t", "--title", default="", help="Session title")
     p_container.add_argument("repo_path", help="Path to git worktree repo")
-    p_container.add_argument("branch", help="Branch name")
+    p_container.add_argument("branch", nargs="?", default=None,
+                             help="Branch name (optional — creates worktree if provided)")
     p_container.add_argument("--image", default="", help="Docker image (default: devcontainer:latest)")
+    p_container.add_argument("-p", "--port", action="append", default=[],
+                             help="Port mapping host:container (repeatable)")
+    p_container.add_argument("-v", "--volume", action="append", default=[],
+                             help="Volume mount host:container (repeatable)")
 
     # init-worktree
     p_iw = sub.add_parser(

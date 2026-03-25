@@ -23,16 +23,15 @@ flowchart TD
   end
 
   subgraph DockerHost[Docker Host]
-    subgraph Container1["dsm_repo_branch"]
-      Workspace1["/workspace (mounted worktree)"]
-      Claude1["claude --dangerously-skip-permissions"]
-      Workspace1 --> Claude1
-    end
-
-    subgraph Container2["dsm_repo_feature"]
-      Workspace2["/workspace (mounted worktree)"]
-      Claude2["claude --dangerously-skip-permissions"]
-      Workspace2 --> Claude2
+    subgraph Container["dsm_repo container"]
+      RepoMount["/workspace (repo root mount)"]
+      CoderUI["coder_ui backend (baked in)"]
+      ClaudeCLI["claude CLI (baked in)"]
+      WT1["/workspace/main"]
+      WT2["/workspace/feature-x"]
+      RepoMount --> WT1
+      RepoMount --> WT2
+      CoderUI --> ClaudeCLI
     end
   end
 

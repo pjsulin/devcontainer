@@ -12,3 +12,8 @@ RUN npm install -g @anthropic-ai/claude-code
 
 # Clean up APT when done.
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Switch to non-root user (uid 1000, already exists as "ubuntu" in base image).
+# Claude Code refuses --dangerously-skip-permissions as root;
+# running as uid 1000 solves permissions and file ownership in one step.
+USER ubuntu

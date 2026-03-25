@@ -91,18 +91,20 @@ This is a coder_ui config change, not a dsm change.
 ## Usage
 
 ```bash
-# Build image (one time, or when deps change)
-docker build -t devcontainer:latest devcontainer/
+# Build image (copies ui_coder into build context, then cleans up)
+make build
+# Or with custom source path:
+CODER_UI_SRC=~/repos/dev/ui_coder make build
 
 # Start container for a repo
 dsm container -t myapp ~/repos/myapp \
-  -p 8003:8003 \
+  -p 8007:8007 \
   -v ~/.claude:/root/.claude \
-  -- uvicorn src.backend.api.main:app --host 0.0.0.0 --port 8003 --app-dir /opt/coder_ui
+  -- uvicorn src.backend.api.main:app --host 0.0.0.0 --port 8007 --app-dir /opt/coder_ui
 
-# Frontend on Mac (separate terminal)
-cd ~/repos/dev/coder_ui/src/frontend
-VITE_API_URL=http://localhost:8003 npm run dev
+# Frontend on host (separate terminal)
+cd ~/repos/dev/ui_coder/src/frontend
+VITE_API_URL=http://localhost:8007 npm run dev
 
 # Create tasks in the UI pointing at /workspace/main, /workspace/feature-x, etc.
 

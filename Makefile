@@ -6,7 +6,10 @@ help:
 	@echo "Dev Session Container - Available Commands:"
 	@echo ""
 	@echo "Environment Setup:"
-	@echo "  make install          - Install code in the virtual environment"      
+	@echo "  make install          - Install code in the virtual environment"
+	@echo ""
+	@echo "Docker:"
+	@echo "  make build            - Build docker image"
 
 
 # Environment Setup
@@ -15,5 +18,4 @@ install:
 	uv pip install -e .
 
 build:
-	@echo "Building docker container..."
 	docker build -t ${APP_NAME} .

@@ -1,9 +1,0 @@
-README.md
-pyproject.toml
-src/devcontainer/main.py
-src/wingx.egg-info/PKG-INFO
-src/wingx.egg-info/SOURCES.txt
-src/wingx.egg-info/dependency_links.txt
-src/wingx.egg-info/entry_points.txt
-src/wingx.egg-info/requires.txt
-src/wingx.egg-info/top_level.txt

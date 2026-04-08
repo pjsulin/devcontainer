@@ -5,7 +5,13 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.10 /uv /uvx /bin/
 CMD ["/sbin/my_init"]
 
 # Install required packages
-RUN apt-get update && apt-get install npm openssh-server -y
+RUN apt-get update && apt-get install npm openssh-server -y && \
+    # GitHub CLI
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+    apt-get update && apt-get install gh -y
 
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code

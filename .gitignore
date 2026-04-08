@@ -1,0 +1,7 @@
+# Build context (copied at build time, not part of this repo)
+coder_ui/
+
+# Python
+__pycache__/
+*.egg-info/
+.venv/

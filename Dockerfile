@@ -5,10 +5,18 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.10 /uv /uvx /bin/
 CMD ["/sbin/my_init"]
 
 # Install required packages
-RUN apt-get update && apt-get install npm -y
+RUN apt-get update && apt-get install npm openssh-server -y
 
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
+
+# Enable SSH service (phusion/baseimage uses runit)
+RUN rm -f /etc/service/sshd/down
+
+# Configure SSH for key-based auth only
+RUN mkdir -p /var/run/sshd && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
 # Clean up APT when done.
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*

@@ -12,8 +12,10 @@ RUN apt-get update && apt-get install -y curl ca-certificates && \
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs
 
-# Install required packages
-RUN apt-get update && apt-get install openssh-server -y && \
+# Install required packages. make and dtach run a project's dev servers in
+# the background (ion's `make dev`, previewed through a forwarded port);
+# lsof is how `make dev-stop` finds them.
+RUN apt-get update && apt-get install openssh-server make dtach lsof -y && \
     # GitHub CLI
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \

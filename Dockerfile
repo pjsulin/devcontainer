@@ -29,7 +29,11 @@ RUN npm install -g @anthropic-ai/claude-code
 # Install the ACP adapter so coder_ui can drive Claude over the Agent Client
 # Protocol via `docker exec -i` (ACP-in-Docker, sprint-49). Baked here rather
 # than fetched at spawn so container tasks start without a network round-trip.
-RUN npm install -g @agentclientprotocol/claude-agent-acp
+# Pinned: keep equal to ion's transport.acp.adapter.version (config/default.yaml).
+# ion reinstalls the adapter in-container when the versions differ, which costs
+# the first conversation and fails without network. Bump both together.
+ARG CLAUDE_AGENT_ACP_VERSION=0.85.1
+RUN npm install -g @agentclientprotocol/claude-agent-acp@${CLAUDE_AGENT_ACP_VERSION}
 
 # Enable SSH service (phusion/baseimage uses runit)
 RUN rm -f /etc/service/sshd/down
